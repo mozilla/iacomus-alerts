@@ -4,10 +4,13 @@
             [clj-time.periodic :as timep]
             [cheshire.core :as json]
             [clojure-csv.core :as csv]
+            [clojure.string :as string]
             [incanter.stats :as stats]
             [incanter.core :refer [abs]]))
 
 (def time-formatter (timef/formatter "yyyyMMdd"))
+(def time-medusa-formatter (timef/formatter "yyyy-MM-dd"))
+(def iacomus-formatter (timef/formatter "EEE MMM dd YYYY"))
 
 (def load-config
   (memoize
@@ -15,7 +18,7 @@
      (println "Fetching configuration: " url)
      (with-open [in (clojure.java.io/input-stream url)]
        (let [config (-> (slurp in) (json/parse-string true))]
-         config)))))
+         (assoc config :url url))))))
 
 (def load-report
   (memoize
@@ -49,7 +52,7 @@
   ;; Returns an attribute accessor function for each sorting option
   (let [header-index (zipmap header (iterate inc 0))]
     (for [value values]
-      #(get % (header-index value)))))
+      [value #(get % (header-index value))])))
 
 (defn primary-key [{:keys [primary-key header]}]
   ;; Returns the primary key of the configuration expressed as a function
@@ -61,10 +64,19 @@
   ;; primary keys to the entries
   [date (zipmap (map primary-key entries) entries)])
 
+(defn coerce [value]
+  (->> value
+       (re-find #"\d+.\d+|\d+")
+       (Double/parseDouble)))
+
 (defn top-metrics [primary-key [date entries] attribute]
   ;; Returns a sequence of all possible values that the primary key takes
   ;; in the 10 "hottest" entries of a report
-  (let [entries (take 10 (sort-by #(Double/parseDouble (attribute %)) > entries))]
+  (let [cnv (fn [entry]
+              (->> entry
+                   attribute
+                   coerce))
+        entries (take 10 (sort-by cnv > entries))]
     (map primary-key entries)))
 
 (defn timeseries [reports metric attr]
@@ -74,7 +86,7 @@
          (let [row (get entries metric)
                value (attr row)]
            [date (if value
-                   (Double/parseDouble value)
+                   (coerce value)
                    nil)]))
        reports))
 
@@ -97,10 +109,29 @@
       (when-let [[mean sd threshold] (outlier-sd? timeseries point)]
         {:mean mean, :sd sd, :threshold threshold}))))
 
-(defn post-alert [info]
-  (println "alert:" info))
+(defn box-plot [attr xs value date]
+  (let [xs (filter identity xs)
+        lq (stats/quantile xs :probs 0.25)
+        hq (stats/quantile xs :probs 0.75)
+        iqr (- hq lq)
+        lf (apply min xs)
+        hf (apply max xs)]
+    [attr lf lq hq hf value date]))
 
-(defn detect [config time]
+(defn generate-alert [{:keys [url]} attr-name {:keys [date value series metric mean sd threshold]}]
+  (let [metric (string/join ":" (concat [attr-name] metric))
+        iacomus-date (timef/unparse iacomus-formatter (time/plus date (time/weeks 2)))
+        date (timef/unparse time-medusa-formatter date)
+        alert {:date date
+               :boxplot (box-plot attr-name series value date)
+               :title metric
+               :link (str "http://mozilla.github.io/iacomus/resources/public/index.html#?config=" url
+                          "&sort=" attr-name
+                          "&base-date=" iacomus-date)
+               :type "boxplot"}]
+    alert))
+
+(defn alerts [config time]
   ;; Runs the detection system for the specified iacomus configuration file
   (let [pk (primary-key config)
         attrs (sort-attributes config)
@@ -109,19 +140,44 @@
         reports (->> reports-source
                      (take 8)
                      (map (partial index-by-primary-keys pk)))]
-    (doseq [attr attrs]
-      (let [metrics (top-metrics pk latest-report attr)]
-        (doseq [metric metrics]
-          (let [[latest & series] (timeseries reports metric attr)]
-            (when-let [statistic (is-outlier? series latest)]
-              (post-alert (merge statistic
-                                 {:metric metric
-                                  :series (map second series)
-                                  :value (second latest)
-                                  :date (first latest)})))))))))
+    (->> (for [[attr-name attr] attrs]
+           (let [metrics (top-metrics pk latest-report attr)]
+             (for [metric metrics]
+               (let [[latest & series] (timeseries reports metric attr)]
+                 (when-let [statistic (is-outlier? series latest)]
+                   (generate-alert config
+                                   attr-name
+                                   (merge statistic
+                                          {:metric metric
+                                           :series (map second series)
+                                           :value (second latest)
+                                           :date (first latest)})))))))
+         (apply concat)
+         (filter identity))))
 
-(doseq [day (take 28 (timep/periodic-seq (time/minus (time/now) (time/days 31)) (time/days 1)))]
-  (println "\nNEW DAYYYYYYYY\n" day)
-  (detect (load-config "https://s3-us-west-2.amazonaws.com/telemetry-public-analysis/mainthreadio/data/iacomus.json") day))
+(defn dump-alerts [alerts]
+  (let [output (json/generate-string alerts)]
+    (spit "alerts.json" output)))
 
-;(detect (load-config "https://s3-us-west-2.amazonaws.com/telemetry-public-analysis/mainthreadio/data/iacomus.json") (time/now))
+(defn detect
+  ([configs]
+     (detect [(time/now)]))
+  ([configs days]
+     (->> (for [day days]
+            (for [{[title description] :title :as config} (map load-config configs)]
+              (let [a (alerts config day)]
+                {:title title
+                 :description description
+                 :alerts a})))
+          (apply concat)
+          (dump-alerts))))
+
+(detect ["https://s3-us-west-2.amazonaws.com/telemetry-public-analysis/mainthreadio/data/iacomus.json"] [(time/date-time 2014 9 11)])
+
+(detect ["https://s3-us-west-2.amazonaws.com/telemetry-public-analysis/addon_perf/data/addon-scan.json"] [(time/date-time 2014 9 11)])
+
+(detect ["https://s3-us-west-2.amazonaws.com/telemetry-public-analysis/mainthreadio/data/iacomus.json"
+         "https://s3-us-west-2.amazonaws.com/telemetry-public-analysis/addon_perf/data/addon-scan.json"] [(time/minus (time/now) (time/weeks 1))])
+
+(detect ["https://s3-us-west-2.amazonaws.com/telemetry-public-analysis/mainthreadio/data/iacomus.json"]
+        (take 32 (timep/periodic-seq (time/minus (time/now) (time/days 35)) (time/days 1))))
