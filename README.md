@@ -5,4 +5,4 @@ alerts to medusa.
 
 ## Usage
 
-FIXME
+Run `run.sh` to launch the detector.
