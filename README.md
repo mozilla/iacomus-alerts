@@ -5,4 +5,4 @@ alerts to medusa.
 
 ## Usage
 
-Run `run.sh` to launch the detector.
+Run `lein run` to launch the detector.
