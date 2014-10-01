@@ -101,13 +101,14 @@
 
 (defn is-outlier? [timeseries [date point]]
   ;; Returns true if the datapoint can be considered an outlier in the timeseries
-  (let [count-points (count timeseries)
-        timeseries (->> timeseries
-                        (map second)
-                        (filter identity))]
-    (when (> (count timeseries) (/ count-points 2)) ;; Ignore timeseries with many NAs
-      (when-let [[mean sd threshold] (outlier-sd? timeseries point)]
-        {:mean mean, :sd sd, :threshold threshold}))))
+  (when (and timeseries date point)
+    (let [count-points (count timeseries)
+          timeseries (->> timeseries
+                          (map second)
+                          (filter identity))]
+      (when (> (count timeseries) (/ count-points 2)) ;; Ignore timeseries with many NAs
+        (when-let [[mean sd threshold] (outlier-sd? timeseries point)]
+          {:mean mean, :sd sd, :threshold threshold})))))
 
 (defn box-plot [attr xs value date]
   (let [xs (filter identity xs)
@@ -133,18 +134,22 @@
 
 (defn alerts [config time]
   ;; Runs the detection system for the specified iacomus configuration file
+  ;; After seeing some of the (probably) misclassified alerts I start thinking
+  ;; that using bayesian inference on windows would be better suited for this problem...
   (let [pk (primary-key config)
         attrs (sort-attributes config)
         reports-source (reports config time)
         latest-report (first reports-source)
         reports (->> reports-source
-                     (take 8)
+                     (take 9)
                      (map (partial index-by-primary-keys pk)))]
     (->> (for [[attr-name attr] attrs]
            (let [metrics (top-metrics pk latest-report attr)]
              (for [metric metrics]
-               (let [[latest & series] (timeseries reports metric attr)]
-                 (when-let [statistic (is-outlier? series latest)]
+               (let [[f latest & series :as ts] (timeseries reports metric attr)
+                     statistic (is-outlier? series latest)
+                     statistic-f (is-outlier? series f)] ;; Reduce the probability of dealing with a statistical fluctuation...
+                 (when (and statistic statistic-f)
                    (generate-alert config
                                    attr-name
                                    (merge statistic
