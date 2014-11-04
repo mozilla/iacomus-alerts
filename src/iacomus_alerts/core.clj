@@ -180,8 +180,7 @@
 
 
 (defn -main []
-  (detect ["https://s3-us-west-2.amazonaws.com/telemetry-public-analysis/mainthreadio/data/iacomus.json"
-           "https://s3-us-west-2.amazonaws.com/telemetry-public-analysis/addon_perf/data/addon-scan.json"]
+  (detect ["https://s3-us-west-2.amazonaws.com/telemetry-public-analysis/mainthreadio/data/iacomus.json"]
           [(time/minus (time/now) (time/weeks 1))]))
 
 ;; (detect ["https://s3-us-west-2.amazonaws.com/telemetry-public-analysis/mainthreadio/data/iacomus.json"]
