@@ -1,0 +1,19 @@
+- remote_user: ubuntu
+  hosts: tag_Name_telemetry_regression_detector  # Assumes medusa is already deployed
+
+  vars:
+    - project_directory: "{{ansible_env.HOME}}/iacomus-alerts"
+
+  tasks:
+    - include: deps.yml
+
+    - name: Install iacomus-alerts
+      git: repo=git://github.com/mozilla/iacomus-alerts.git dest={{project_directory}} update=yes accept_hostkey=yes
+
+    - name: Setup cron job
+      sudo: yes
+      cron: name=iacomus hour=5 job="{{project_directory}}/run.sh > /var/log/iacomus.log" cron_file=iacomus user=root
+
+    - name: Restart cron
+      sudo: yes
+      service: name=cron state=restarted
