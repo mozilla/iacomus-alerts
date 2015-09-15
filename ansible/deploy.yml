@@ -12,7 +12,7 @@
 
     - name: Setup cron job
       sudo: yes
-      cron: name=iacomus hour=5 job="{{project_directory}}/run.sh > /var/log/iacomus.log" cron_file=iacomus user=root
+      cron: name=iacomus minute=0 hour=5 job="{{project_directory}}/run.sh > /var/log/iacomus.log" cron_file=iacomus user=root
 
     - name: Restart cron
       sudo: yes
